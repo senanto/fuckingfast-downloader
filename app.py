@@ -61,12 +61,9 @@ async def smart_download(session, url, filepath, position):
 
         try:
             async with session.get(url, headers=headers) as response:
-
-                # ❗ KRİTİK: range çalışmazsa append YAPMA
                 accept_range = response.status == 206
 
                 if local_size > 0 and not accept_range:
-                    # bozulmayı engelle
                     filepath.unlink(missing_ok=True)
                     local_size = 0
 
@@ -98,8 +95,6 @@ async def smart_download(session, url, filepath, position):
                         progress.update(len(chunk))
 
                 progress.close()
-
-                # ❗ DOĞRULAMA: fazla yazma var mı?
                 final_size = get_local_size(filepath)
                 expected = total if total else final_size
 
