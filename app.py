@@ -35,52 +35,45 @@ def extract_filename(response, fallback):
 
 
 async def get_real_download_url(session, page_url):
-    try:
-        async with session.get(page_url) as response:
-            if response.status != 200:
-                print(f"[FAIL PAGE] {page_url}")
-                return None
+    async with session.get(page_url) as response:
+        if response.status != 200:
+            return None
 
-            html = await response.text()
-            match = DOWNLOAD_URL_PATTERN.search(html)
+        html = await response.text()
+        match = DOWNLOAD_URL_PATTERN.search(html)
 
-            if not match:
-                print(f"[NO DOWNLOAD URL] {page_url}")
-                return None
-
-            return match.group(1)
-
-    except Exception as e:
-        print(f"[ERROR PAGE] {page_url} -> {e}")
-        return None
+        return match.group(1) if match else None
 
 
-async def download_with_resume(session, url, filepath, position):
-    temp_path = filepath.with_suffix(filepath.suffix + ".part")
+def get_local_size(path: Path) -> int:
+    return path.stat().st_size if path.exists() else 0
 
-    downloaded = temp_path.stat().st_size if temp_path.exists() else 0
 
-    headers = {}
-    if downloaded > 0:
-        headers["Range"] = f"bytes={downloaded}-"
-
+async def smart_download(session, url, filepath, position):
     retry = 0
 
     while retry < 5:
+        local_size = get_local_size(filepath)
+
+        headers = {}
+        if local_size > 0:
+            headers["Range"] = f"bytes={local_size}-"
+
         try:
             async with session.get(url, headers=headers) as response:
+                accept_range = response.status == 206
+                if local_size > 0 and not accept_range:
+                    filepath.unlink(missing_ok=True)
+                    local_size = 0
 
-                if response.status not in (200, 206):
-                    retry += 1
-                    await asyncio.sleep(2)
-                    continue
+                mode = "ab" if local_size > 0 and accept_range else "wb"
 
                 total = response.headers.get("Content-Length")
-                total = int(total) + downloaded if total else None
+                total = int(total) + local_size if total else None
 
                 progress = tqdm(
                     total=total,
-                    initial=downloaded,
+                    initial=local_size,
                     unit="B",
                     unit_scale=True,
                     unit_divisor=1024,
@@ -89,21 +82,27 @@ async def download_with_resume(session, url, filepath, position):
                     leave=True
                 )
 
-                mode = "ab" if downloaded else "wb"
+                written = 0
 
-                with open(temp_path, mode) as f:
+                with open(filepath, mode) as f:
                     async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                         if not chunk:
                             continue
+
                         f.write(chunk)
-                        downloaded += len(chunk)
+                        written += len(chunk)
                         progress.update(len(chunk))
 
                 progress.close()
+                final_size = get_local_size(filepath)
+                expected = total if total else final_size
 
-            temp_path.rename(filepath)
-            print(f"[OK] {filepath.name}")
-            return
+                if expected and final_size > expected:
+                    filepath.unlink(missing_ok=True)
+                    raise Exception("SIZE_MISMATCH")
+
+                print(f"[OK] {filepath.name}")
+                return
 
         except Exception as e:
             retry += 1
@@ -115,20 +114,16 @@ async def download_with_resume(session, url, filepath, position):
 
 async def download_file(session, semaphore, page_url, position):
     async with semaphore:
-        try:
-            real_url = await get_real_download_url(session, page_url)
-            if not real_url:
-                return
+        real_url = await get_real_download_url(session, page_url)
+        if not real_url:
+            return
 
-            async with session.get(real_url) as response:
-                filename = extract_filename(response, "unknown_file")
+        async with session.get(real_url) as r:
+            filename = extract_filename(r, "unknown_file")
 
-            filepath = DOWNLOAD_DIR / filename
+        filepath = DOWNLOAD_DIR / filename
 
-            await download_with_resume(session, real_url, filepath, position)
-
-        except Exception as e:
-            print(f"[ERROR] {page_url} -> {e}")
+        await smart_download(session, real_url, filepath, position)
 
 
 async def main():
@@ -137,19 +132,10 @@ async def main():
 
     semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
 
-    timeout = aiohttp.ClientTimeout(total=None)
-    connector = aiohttp.TCPConnector(limit=0)
-
     async with aiohttp.ClientSession(
-        timeout=timeout,
-        connector=connector,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/137.0 Safari/537.36"
-            )
-        }
+        timeout=aiohttp.ClientTimeout(total=None),
+        connector=aiohttp.TCPConnector(limit=0),
+        headers={"User-Agent": "Mozilla/5.0"}
     ) as session:
 
         tasks = [
