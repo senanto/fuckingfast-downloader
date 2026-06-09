@@ -15,6 +15,10 @@ DOWNLOAD_URL_PATTERN = re.compile(
 )
 
 
+def clean_filename(name: str) -> str:
+    return name.split("?")[0].split("#")[0]
+
+
 def extract_filename(response, fallback):
     cd = response.headers.get("Content-Disposition", "")
 
@@ -25,7 +29,7 @@ def extract_filename(response, fallback):
     )
 
     if match:
-        return match.group(1) or match.group(2)
+        return clean_filename(match.group(1) or match.group(2))
 
     return fallback
 
@@ -52,7 +56,9 @@ async def get_real_download_url(session, page_url):
 
 
 async def download_with_resume(session, url, filepath, position):
-    downloaded = filepath.stat().st_size if filepath.exists() else 0
+    temp_path = filepath.with_suffix(filepath.suffix + ".part")
+
+    downloaded = temp_path.stat().st_size if temp_path.exists() else 0
 
     headers = {}
     if downloaded > 0:
@@ -85,7 +91,7 @@ async def download_with_resume(session, url, filepath, position):
 
                 mode = "ab" if downloaded else "wb"
 
-                with open(filepath, mode) as f:
+                with open(temp_path, mode) as f:
                     async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                         if not chunk:
                             continue
@@ -94,8 +100,10 @@ async def download_with_resume(session, url, filepath, position):
                         progress.update(len(chunk))
 
                 progress.close()
-                print(f"[OK] {filepath.name}")
-                return
+
+            temp_path.rename(filepath)
+            print(f"[OK] {filepath.name}")
+            return
 
         except Exception as e:
             retry += 1
@@ -112,8 +120,10 @@ async def download_file(session, semaphore, page_url, position):
             if not real_url:
                 return
 
-            filename = real_url.split("/")[-1].split("?")[0]
-            filepath = DOWNLOAD_DIR / filename   # artık direkt .part1 vs neyse o
+            async with session.get(real_url) as response:
+                filename = extract_filename(response, "unknown_file")
+
+            filepath = DOWNLOAD_DIR / filename
 
             await download_with_resume(session, real_url, filepath, position)
 
@@ -134,7 +144,11 @@ async def main():
         timeout=timeout,
         connector=connector,
         headers={
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/137.0 Safari/537.36"
+            )
         }
     ) as session:
 
