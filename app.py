@@ -2,11 +2,12 @@ import asyncio
 import aiohttp
 import re
 from pathlib import Path
+from tqdm import tqdm
 
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-CONCURRENT_DOWNLOADS = 10
+CONCURRENT_DOWNLOADS = 3
 
 DOWNLOAD_URL_PATTERN = re.compile(
     r'window\.open\("([^"]*dl\.fuckingfast\.co/dl/[^"]+)"\)'
@@ -50,7 +51,7 @@ async def get_real_download_url(session, page_url):
         return None
 
 
-async def download_file(session, semaphore, page_url):
+async def download_file(session, semaphore, page_url, position):
     async with semaphore:
         try:
             real_url = await get_real_download_url(session, page_url)
@@ -74,10 +75,24 @@ async def download_file(session, semaphore, page_url):
                     print(f"[SKIP] {filename}")
                     return
 
+                total = int(response.headers.get("Content-Length", 0))
+
+                progress = tqdm(
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    position=position,
+                    desc=filename[:30],
+                    leave=True
+                )
+
                 with open(filepath, "wb") as f:
                     async for chunk in response.content.iter_chunked(1024 * 1024):
                         f.write(chunk)
+                        progress.update(len(chunk))
 
+                progress.close()
                 print(f"[OK] {filename}")
 
         except Exception as e:
@@ -95,7 +110,6 @@ async def main():
     semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
 
     timeout = aiohttp.ClientTimeout(total=None)
-
     connector = aiohttp.TCPConnector(limit=0)
 
     async with aiohttp.ClientSession(
@@ -111,8 +125,8 @@ async def main():
     ) as session:
 
         tasks = [
-            download_file(session, semaphore, url)
-            for url in links
+            download_file(session, semaphore, url, i % CONCURRENT_DOWNLOADS)
+            for i, url in enumerate(links)
         ]
 
         await asyncio.gather(*tasks)
