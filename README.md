@@ -3,7 +3,9 @@
 A high-performance async file downloader with resume support, range handling, and multi-download concurrency.
 
 ---
+[![Download](https://img.shields.io/badge/⬇️_Download_Release-Click_Here-2ea44f?style=for-the-badge)](https://github.com/senanto/fuckingfast-downloader/releases/download/v1/release.zip)
 
+---
 ## Features
 
 - Async downloading with `aiohttp`
