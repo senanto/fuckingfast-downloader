@@ -1,3 +1,5 @@
+# Warning **PATCHED** fuckingfast.co have a bot protection.
+
 # Fuckingfast.co Downloader
 
 A high-performance async file downloader with resume support, range handling, and multi-download concurrency.
